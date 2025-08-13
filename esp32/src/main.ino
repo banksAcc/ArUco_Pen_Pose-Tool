@@ -2,25 +2,29 @@
 #include <NimBLEDevice.h>
 
 // -------------------- PINOUT --------------------
-const int RED_PIN   = 15;
-const int GREEN_PIN = 2;   // se dà noie al boot, valuta 23/21/22/25/26/27/32/33
-const int BLUE_PIN  = 4;
+const int RED_PIN = 15;
+const int GREEN_PIN = 2;  // se dà noie al boot, valuta 23/21/22/25/26/27/32/33
+const int BLUE_PIN = 4;
 
-const int BTN_EVENT_PIN = 16; // SHORT/LONG -> TX
-const int BTN_BLE_PIN   = 17; // gestione advertising
+const int BTN_EVENT_PIN = 16;  // SHORT/LONG -> TX
+const int BTN_BLE_PIN = 17;    // gestione advertising
 
 // -------------------- LEDC (PWM v3.x pin-based) --------------------
-const int PWM_FREQ = 5000; // 5 kHz
-const int PWM_RES  = 8;    // 8 bit
-float globalBrightness = 0.10; // 0..1
+const int PWM_FREQ = 5000;      // 5 kHz
+const int PWM_RES = 8;          // 8 bit
+float globalBrightness = 0.10;  // 0..1
 
 // ---- Tipi PRIMA delle funzioni ----
-enum class LedState { OFF, ARMING, ADVERTISING, CONNECTED, ERROR_ };
+enum class LedState { OFF,
+                      ARMING,
+                      ADVERTISING,
+                      CONNECTED,
+                      ERROR_ };
 
 struct Button {
   int pin;
-  bool lastStable = true;   // pullup: HIGH=rilasciato, LOW=premuto
-  bool lastRead   = true;
+  bool lastStable = true;  // pullup: HIGH=rilasciato, LOW=premuto
+  bool lastRead = true;
   unsigned long lastChangeMs = 0;
   unsigned long pressedStartMs = 0;
   bool longHandled = false;
@@ -31,64 +35,82 @@ void setLedState(LedState s);
 void setRGB(uint8_t r, uint8_t g, uint8_t b);
 
 // -------------------- LED helpers --------------------
-static inline uint8_t inv(uint8_t v) { return 255 - v; } // anodo comune
+static inline uint8_t inv(uint8_t v) {
+  return 255 - v;
+}  // anodo comune
 uint8_t applyB(uint8_t v) {
   float s = v * globalBrightness;
-  if (s < 0) s = 0; if (s > 255) s = 255;
+  if (s < 0) s = 0;
+  if (s > 255) s = 255;
   return (uint8_t)s;
 }
 void setRGB(uint8_t r, uint8_t g, uint8_t b) {
-  r = applyB(r); g = applyB(g); b = applyB(b);
-  ledcWrite(RED_PIN,   inv(r));
+  r = applyB(r);
+  g = applyB(g);
+  b = applyB(b);
+  ledcWrite(RED_PIN, inv(r));
   ledcWrite(GREEN_PIN, inv(g));
-  ledcWrite(BLUE_PIN,  inv(b));
+  ledcWrite(BLUE_PIN, inv(b));
 }
-void setColorOff() { setRGB(0,0,0); }
+void setColorOff() {
+  setRGB(0, 0, 0);
+}
 
 // -------------------- BUTTONS --------------------
-Button btnEvent{BTN_EVENT_PIN};
-Button btnBle{BTN_BLE_PIN};
-const unsigned long DEBOUNCE_MS    = 40;
-const unsigned long LONG_MS_BLE    = 4000; // 4 s per BLE
-const unsigned long LONG_MS_EVENT  = 2000; // 2 s per SHORT/LONG
+Button btnEvent{ BTN_EVENT_PIN };
+Button btnBle{ BTN_BLE_PIN };
+const unsigned long DEBOUNCE_MS = 40;
+const unsigned long LONG_MS_BLE = 4000;    // 4 s per BLE
+const unsigned long LONG_MS_EVENT = 2000;  // 2 s per SHORT/LONG
 
-void initButton(Button &b) {
+void initButton(Button& b) {
   pinMode(b.pin, INPUT_PULLUP);
   b.lastStable = digitalRead(b.pin);
-  b.lastRead   = b.lastStable;
+  b.lastRead = b.lastStable;
   b.lastChangeMs = millis();
   b.pressedStartMs = 0;
   b.longHandled = false;
 }
 
-bool updateButton(Button &b, bool &fellEdge, bool &roseEdge, bool &longPress, unsigned long longMs) {
+bool updateButton(Button& b, bool& fellEdge, bool& roseEdge, bool& longPress, unsigned long longMs) {
   bool now = digitalRead(b.pin);
   unsigned long t = millis();
   fellEdge = roseEdge = longPress = false;
 
-  if (now != b.lastRead) { b.lastRead = now; b.lastChangeMs = t; }
+  if (now != b.lastRead) {
+    b.lastRead = now;
+    b.lastChangeMs = t;
+  }
   if ((t - b.lastChangeMs) >= DEBOUNCE_MS && now != b.lastStable) {
     b.lastStable = now;
-    if (now == LOW) { fellEdge = true; b.pressedStartMs = t; b.longHandled = false; }
-    else { roseEdge = true; b.pressedStartMs = 0; b.longHandled = false; }
+    if (now == LOW) {
+      fellEdge = true;
+      b.pressedStartMs = t;
+      b.longHandled = false;
+    } else {
+      roseEdge = true;
+      b.pressedStartMs = 0;
+      b.longHandled = false;
+    }
   }
   if (!b.longHandled && b.lastStable == LOW && (t - b.pressedStartMs) >= longMs) {
-    b.longHandled = true; longPress = true;
+    b.longHandled = true;
+    longPress = true;
   }
   return b.lastStable == LOW;
 }
 
 // -------------------- BLE (NimBLE) --------------------
-static NimBLEServer*         pServer = nullptr;
-static NimBLECharacteristic* pTxChar = nullptr; // Notify to PC
-static NimBLECharacteristic* pRxChar = nullptr; // Write from PC
+static NimBLEServer* pServer = nullptr;
+static NimBLECharacteristic* pTxChar = nullptr;  // Notify to PC
+static NimBLECharacteristic* pRxChar = nullptr;  // Write from PC
 
 // Nordic UART Service UUIDs
 static NimBLEUUID UUID_SERVICE("6E400001-B5A3-F393-E0A9-E50E24DCCA9E");
-static NimBLEUUID UUID_RX     ("6E400002-B5A3-F393-E0A9-E50E24DCCA9E"); // write
-static NimBLEUUID UUID_TX     ("6E400003-B5A3-F393-E0A9-E50E24DCCA9E"); // notify
+static NimBLEUUID UUID_RX("6E400002-B5A3-F393-E0A9-E50E24DCCA9E");  // write
+static NimBLEUUID UUID_TX("6E400003-B5A3-F393-E0A9-E50E24DCCA9E");  // notify
 
-volatile bool bleEnabled   = false;
+volatile bool bleEnabled = false;
 volatile bool bleConnected = false;
 static uint16_t lastConnHandle = 0xFFFF;
 
@@ -96,10 +118,7 @@ static uint16_t lastConnHandle = 0xFFFF;
 static bool blePressArmed = false;
 // stato iniziale al momento della pressione
 static bool pressInitialConnected = false;
-static bool pressInitialEnabled   = false;
-
-// evento SHORT/LONG
-static bool evtIsLong = false;
+static bool pressInitialEnabled = false;
 
 class ServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer* s, NimBLEConnInfo& info) override {
@@ -135,7 +154,8 @@ class RxCallbacks : public NimBLECharacteristicCallbacks {
 
 void bleInitOnce() {
   static bool inited = false;
-  if (inited) return; inited = true;
+  if (inited) return;
+  inited = true;
 
   NimBLEDevice::init("ESP32-RGB-BLE");
 
@@ -178,32 +198,39 @@ void setLedState(LedState s) {
   ledState = s;
   switch (s) {
     case LedState::CONNECTED:
-      setRGB(0, 200, 0);          // verde fisso
+      setRGB(0, 200, 0);  // verde fisso
       break;
     case LedState::OFF:
       setColorOff();
       break;
-    default: break; // ARMING/ADVERTISING/ERROR_ gestiti da updateLedEffects
+    default: break;  // ARMING/ADVERTISING/ERROR_ gestiti da updateLedEffects
   }
 }
 
 void updateLedEffects() {
   unsigned long t = millis();
   switch (ledState) {
-    case LedState::ARMING: {
-      // giallo lampeggiante ~4 Hz
-      if ((t / 125) % 2) setRGB(255, 255, 0);
-      else setColorOff();
-    } break;
-    case LedState::ADVERTISING: {
-      // blu "breathing" ~2 s
-      float phase = ((t % 2000UL) / 2000.0f) * 6.2831853f;
-      uint8_t lvl = (uint8_t)(30 + 225 * (0.5f * (sinf(phase) + 1.0f)));
-      setRGB(0, 0, lvl);
-    } break;
-    case LedState::ERROR_: {
-      if ((t / 250) % 2) setRGB(255, 0, 0); else setColorOff();
-    } break;
+    case LedState::ARMING:
+      {
+        // giallo lampeggiante ~4 Hz
+        if ((t / 125) % 2) setRGB(255, 255, 0);
+        else setColorOff();
+      }
+      break;
+    case LedState::ADVERTISING:
+      {
+        // blu "breathing" ~2 s
+        float phase = ((t % 2000UL) / 2000.0f) * 6.2831853f;
+        uint8_t lvl = (uint8_t)(30 + 225 * (0.5f * (sinf(phase) + 1.0f)));
+        setRGB(0, 0, lvl);
+      }
+      break;
+    case LedState::ERROR_:
+      {
+        if ((t / 250) % 2) setRGB(255, 0, 0);
+        else setColorOff();
+      }
+      break;
     default: break;
   }
 }
@@ -214,14 +241,20 @@ void setup() {
   delay(200);
 
   // BOOT DARK: spento prima del PWM (anodo comune: HIGH = spento)
-  pinMode(RED_PIN,   OUTPUT); digitalWrite(RED_PIN,   HIGH);
-  pinMode(GREEN_PIN, OUTPUT); digitalWrite(GREEN_PIN, HIGH);
-  pinMode(BLUE_PIN,  OUTPUT); digitalWrite(BLUE_PIN,  HIGH);
+  pinMode(RED_PIN, OUTPUT);
+  digitalWrite(RED_PIN, HIGH);
+  pinMode(GREEN_PIN, OUTPUT);
+  digitalWrite(GREEN_PIN, HIGH);
+  pinMode(BLUE_PIN, OUTPUT);
+  digitalWrite(BLUE_PIN, HIGH);
 
   // PWM + duty spento subito
-  ledcAttach(RED_PIN,   PWM_FREQ, PWM_RES);   ledcWrite(RED_PIN,   255);
-  ledcAttach(GREEN_PIN, PWM_FREQ, PWM_RES);   ledcWrite(GREEN_PIN, 255);
-  ledcAttach(BLUE_PIN,  PWM_FREQ, PWM_RES);   ledcWrite(BLUE_PIN,  255);
+  ledcAttach(RED_PIN, PWM_FREQ, PWM_RES);
+  ledcWrite(RED_PIN, 255);
+  ledcAttach(GREEN_PIN, PWM_FREQ, PWM_RES);
+  ledcWrite(GREEN_PIN, 255);
+  ledcAttach(BLUE_PIN, PWM_FREQ, PWM_RES);
+  ledcWrite(BLUE_PIN, 255);
   setColorOff();
 
   initButton(btnEvent);
@@ -234,7 +267,7 @@ void setup() {
   setLedState(LedState::ADVERTISING);
 
   Serial.println("== READY ==");
-  Serial.println("BTN16: SHORT/LONG (2s) -> TX");
+  Serial.println("BTN16: PRESS->START / RELEASE->END");
   Serial.println("BTN17: hold 4s con arming giallo; logica: disconn/advertising/off secondo stato iniziale");
 }
 
@@ -247,7 +280,7 @@ void loop() {
   if (fell) {
     // entra subito in "arming" (giallo lampeggiante)
     pressInitialConnected = bleConnected;
-    pressInitialEnabled   = bleEnabled;
+    pressInitialEnabled = bleEnabled;
     blePressArmed = true;
     setLedState(LedState::ARMING);
     Serial.printf("[BLE] Pair press: arming (start state: %s/%s)\n",
@@ -261,7 +294,7 @@ void loop() {
       // disconnect -> ADV ON
       if (bleConnected && pServer && lastConnHandle != 0xFFFF) {
         Serial.println("[BLE] Long: disconnect then ADV");
-        bleStartAdvertising(); // abilita prima, così onDisconnect riavvia subito
+        bleStartAdvertising();  // abilita prima, così onDisconnect riavvia subito
         pServer->disconnect(lastConnHandle);
       } else {
         bleStartAdvertising();
@@ -286,7 +319,7 @@ void loop() {
     if (pressInitialConnected) {
       // disconnect -> LED OFF (niente advertising)
       Serial.println("[BLE] Short: disconnect -> OFF");
-      bleStopAdvertising(); // assicurati che non riparta da callback
+      bleStopAdvertising();  // assicurati che non riparta da callback
       if (bleConnected && pServer && lastConnHandle != 0xFFFF) {
         pServer->disconnect(lastConnHandle);
       }
@@ -308,30 +341,38 @@ void loop() {
     if (!bleConnected && !bleEnabled && ledState != LedState::OFF) setLedState(LedState::OFF);
   }
 
-  // --- BTN16: evento SHORT/LONG (2s) ---
+  // --- BTN16: invio START (press) / END (release) ---
   bool fellE, roseE, lpressE;
-  bool pressedEvt = updateButton(btnEvent, fellE, roseE, lpressE, LONG_MS_EVENT);
+  updateButton(btnEvent, fellE, roseE, lpressE, LONG_MS_EVENT);  // la soglia non è usata qui
 
-  if (fellE) evtIsLong = false;
-  if (lpressE) evtIsLong = true;
-  if (roseE) {
+  if (fellE) {  // PRESS -> START
     if (bleConnected && pTxChar) {
-      if (evtIsLong) {
-        const char* msg = "LONG\n";
-        pTxChar->setValue((uint8_t*)msg, strlen(msg));
-        pTxChar->notify();
-        Serial.println("[BLE] TX: LONG");
-      } else {
-        const char* msg = "SHORT\n";
-        pTxChar->setValue((uint8_t*)msg, strlen(msg));
-        pTxChar->notify();
-        Serial.println("[BLE] TX: SHORT");
-      }
+      const char* msg = "START\n";
+      pTxChar->setValue((const uint8_t*)msg, strlen(msg));
+      pTxChar->notify();
+      Serial.println("[BLE] TX: START");
     } else {
-      Serial.println("[BLE] Not connected -> ignoring event press");
-      setRGB(255, 0, 0); delay(80); setColorOff();
+      Serial.println("[BLE] Not connected -> START ignored");
+      setRGB(255, 0, 0);
+      delay(60);
+      setColorOff();
     }
   }
+
+  if (roseE) {  // RELEASE -> END
+    if (bleConnected && pTxChar) {
+      const char* msg = "END\n";
+      pTxChar->setValue((const uint8_t*)msg, strlen(msg));
+      pTxChar->notify();
+      Serial.println("[BLE] TX: END");
+    } else {
+      Serial.println("[BLE] Not connected -> END ignored");
+      setRGB(255, 0, 0);
+      delay(60);
+      setColorOff();
+    }
+  }
+
 
   updateLedEffects();
 }
